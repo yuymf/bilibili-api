@@ -13,9 +13,10 @@ from typing import List, Union, Tuple
 import jwt
 
 from .utils.utils import get_api, join, raise_for_statement
+from .utils.credential import Credential
 from .utils.user_render_data import get_user_dynamic_render_data
 from .exceptions import ResponseCodeException
-from .utils.network import Api, HEADERS, Credential
+from .utils.network import get_session, Api, HEADERS
 from .channel_series import ChannelOrder, ChannelSeries, ChannelSeriesType
 
 API = get_api("user")
@@ -199,43 +200,40 @@ class OrderType(Enum):
     asc = "asc"
 
 
-class OpusType(Enum):
-    """
-    图文类型
-
-    + ALL: 所有
-    + ARTICLE: 属于专栏的图文
-    + DYNAMIC: 不属于专栏（但为动态）的图文
-    """
-
-    ALL = "all"
-    ARTICLE = "article"
-    DYNAMIC = "dynamic"
-
-
-async def name2uid(names: Union[str, List[str]], credential: Credential = None):
+async def name2uid_sync(names: Union[str, List[str]]):
     """
     将用户名转为 uid
 
     Args:
         names (str/List[str]): 用户名
-        credential (Credential, optional): 凭据类. Defaults to None.
 
     Returns:
         dict: 调用 API 返回的结果
     """
-    credential = credential if credential else Credential()
-    credential.raise_for_no_sessdata()
     if isinstance(names, str):
         n = names
     else:
         n = ",".join(names)
     params = {"names": n}
-    return (
-        await Api(**API["info"]["name_to_uid"], credential=credential)
-        .update_params(**params)
-        .result
-    )
+    return Api(**API["info"]["name_to_uid"]).update_params(**params).result_sync
+
+
+async def name2uid(names: Union[str, List[str]]):
+    """
+    将用户名转为 uid
+
+    Args:
+        names (str/List[str]): 用户名
+
+    Returns:
+        dict: 调用 API 返回的结果
+    """
+    if isinstance(names, str):
+        n = names
+    else:
+        n = ",".join(names)
+    params = {"names": n}
+    return await Api(**API["info"]["name_to_uid"]).update_params(**params).result
 
 
 class User:
@@ -256,6 +254,24 @@ class User:
             credential = Credential()
         self.credential: Credential = credential
         self.__self_info = None
+        self.__access_id: Union[str, None] = None
+
+    def get_user_info_sync(self) -> dict:
+        """
+        获取用户信息（昵称，性别，生日，签名，头像 URL，空间横幅 URL 等）
+
+        Returns:
+            dict: 调用接口返回的内容。
+
+        [用户空间详细信息](https://github.com/SocialSisterYi/bilibili-API-collect/blob/master/docs/user/info.md#%E7%94%A8%E6%88%B7%E7%A9%BA%E9%97%B4%E8%AF%A6%E7%BB%86%E4%BF%A1%E6%81%AF)
+        """
+        params = {
+            "mid": self.__uid,
+        }
+        result = Api(
+            **API["info"]["info"], credential=self.credential, params=params
+        ).result_sync
+        return result
 
     async def get_user_info(self) -> dict:
         """
@@ -266,7 +282,10 @@ class User:
 
         [用户空间详细信息](https://github.com/SocialSisterYi/bilibili-API-collect/blob/master/docs/user/info.md#%E7%94%A8%E6%88%B7%E7%A9%BA%E9%97%B4%E8%AF%A6%E7%BB%86%E4%BF%A1%E6%81%AF)
         """
-        params = {"mid": self.__uid, "w_webid": await self.get_access_id()}
+        params = {
+            "mid": self.__uid,
+            "w_webid": await self.get_access_id()
+        }
         return (
             await Api(**API["info"]["info"], credential=self.credential)
             .update_params(**params)
@@ -420,7 +439,10 @@ class User:
             dict: 调用接口返回的内容。
         """
         api = API["info"]["live"]
-        params = {"mid": self.__uid, "w_webid": await self.get_access_id()}
+        params = {
+            "mid": self.__uid,
+            "w_webid": await self.get_access_id()
+        }
         return (
             await Api(**api, credential=self.credential).update_params(**params).result
         )
@@ -451,6 +473,7 @@ class User:
             dict: 调用接口返回的内容。
         """
         api = API["info"]["video"]
+        dm_rand = "ABCDEFGHIJK"
         params = {
             "mid": self.__uid,
             "ps": ps,
@@ -458,9 +481,12 @@ class User:
             "pn": pn,
             "keyword": keyword,
             "order": order.value,
+            # -352 https://github.com/Nemo2011/bilibili-api/issues/595 需要跟进
+            "dm_img_list": "[]",  # 鼠标/键盘操作记录
+            "dm_img_str": "".join(random.sample(dm_rand, 2)),
+            "dm_cover_img_str": "".join(random.sample(dm_rand, 2)),
+            "dm_img_inter": '{"ds":[],"wh":[0,0,0],"of":[0,0,0]}',
             "order_avoided": True,
-            "platform": "web",
-            "w_webid": await self.get_access_id(),
         }
         return (
             await Api(**api, credential=self.credential).update_params(**params).result
@@ -605,7 +631,7 @@ class User:
         建议使用 user.get_dynamics_new() 新接口。
 
         Args:
-            offset (int, optional):     该值为第一次调用本方法时，数据中会有个 next_offset 字段，指向下一动态列表第一条动态（类似单向链表）。根据上一次获取结果中的 next_offset 字段值，循环填充该值即可获取到全部动态。0 为从头开始。Defaults to 0.
+            offset (str, optional):     该值为第一次调用本方法时，数据中会有个 next_offset 字段，指向下一动态列表第一条动态（类似单向链表）。根据上一次获取结果中的 next_offset 字段值，循环填充该值即可获取到全部动态。0 为从头开始。Defaults to 0.
             need_top (bool, optional):  显示置顶动态. Defaults to False.
 
         Returns:
@@ -621,13 +647,13 @@ class User:
             await Api(**api, credential=self.credential).update_params(**params).result
         )
         # card 字段自动转换成 JSON。
-        if data.get("cards"):
+        if "cards" in data:
             for card in data["cards"]:
                 card["card"] = json.loads(card["card"])
                 card["extend_json"] = json.loads(card["extend_json"])
         return data
 
-    async def get_dynamics_new(self, offset: str = "") -> dict:
+    async def get_dynamics_new(self, offset: int = "") -> dict:
         """
         获取用户动态。
 
@@ -641,10 +667,8 @@ class User:
         params = {
             "host_mid": self.__uid,
             "offset": offset,
-            "features": "itemOpusStyle,listOnlyfans,opusBigCover,onlyfansVote,forwardListHidden,decorationCard,commentsNewVersion,onlyfansAssetsV2,ugcDelete,onlyfansQaCard",
+            "features": "itemOpusStyle",
             "timezone_offset": -480,
-            "x-bili-device-req-json": '{"platform":"web","device":"pc"}',
-            "x-bili-web-req-json": '{"spm_id":"333.1387"}',
         }
         data = (
             await Api(**api, credential=self.credential).update_params(**params).result
@@ -728,7 +752,17 @@ class User:
         """
         api = API["info"]["all_followings"]
         params = {"mid": self.__uid}
-        data = await Api(**api).update_params(**params).request(raw=True)
+        sess = get_session()
+        data = json.loads(
+            (
+                await sess.get(
+                    url=api["url"],
+                    params=params,
+                    cookies=self.credential.get_cookies(),
+                    headers=HEADERS,
+                )
+            ).text
+        )
         return data["card"]["attentions"]
 
     async def get_followers(
@@ -932,6 +966,7 @@ class User:
             .result
         )
         items = res["items_lists"]["page"]["total"]
+        time.sleep(0.5)
         if items == 0:
             items = 1
         params["page_size"] = items
@@ -1022,45 +1057,38 @@ class User:
         视频三联特效
 
         Returns:
-            dict: 调用 API 返回的结果
+            dict: 调用 API 返回的结果。
         """
         api = API["info"]["uplikeimg"]
         params = {"vmid": self.get_uid()}
-        return (
-            await Api(**api, credential=self.credential).update_params(**params).result
-        )
-
-    async def get_opus(self, type_: OpusType = OpusType.ALL, offset: str = "") -> dict:
-        """
-        获取用户发布过的图文
-
-        Args:
-            type_  (OpusType, optional): 获取的图文类型. Defaults to OpusType.ALL.
-            offset (str, optional)     : 偏移量。每次请求可获取下次请求对应的偏移量，类似单向链表。对应返回结果的 `["offset"]` Defaults to "".
-
-        Returns:
-            dict: 调用 API 返回的结果
-        """
-        api = API["info"]["opus"]
-        params = {
-            "host_mid": self.get_uid(),
-            "offset": offset,
-            "type": type_.value,
-            "web_location": "333.1387",
-            "w_webid": await self.get_access_id(),
-        }
-        return (
-            await Api(**api, credential=self.credential).update_params(**params).result
-        )
+        return await Api(**api).update_params(**params).result
 
     async def get_access_id(self) -> str:
         """
-        获取用户 access_id (w_webid) 如未过期直接从本地获取 防止重复请求
-
-        Returns:
-            str: access_id
+        获取用户 access_id 如未过期直接从本地获取 防止重复请求
         """
-        return await get_user_dynamic_render_data(self.__uid)
+        if self.__access_id is not None:
+            if not await self.is_access_id_expired():
+                return self.__access_id
+
+        render_data: dict = await get_user_dynamic_render_data(self.__uid)
+        self.__access_id = render_data['access_id']
+
+        return self.__access_id
+
+    async def is_access_id_expired(self) -> bool:
+        """
+        判断用户 access_id 是否过期 access_id 为 JWT 解析 Payload 内容判断是否有效
+        """
+        if self.__access_id is None:
+            return False
+
+        payload = jwt.decode(jwt=self.__access_id, options={"verify_signature": False})
+        created_at: int = payload['iat']
+        ttl: int = payload['ttl']
+        current_timestamp: int = int(time.time())
+
+        return (created_at + ttl) <= current_timestamp
 
 
 async def get_self_info(credential: Credential) -> dict:
@@ -1113,7 +1141,7 @@ async def create_subscribe_group(name: str, credential: Credential) -> dict:
         credential (Credential): Credential
 
     Returns:
-        dict: API 调用返回结果。
+        API 调用返回结果。
     """
     credential.raise_for_no_sessdata()
     credential.raise_for_no_bili_jct()
@@ -1134,7 +1162,7 @@ async def delete_subscribe_group(group_id: int, credential: Credential) -> dict:
         credential (Credential): Credential
 
     Returns:
-        dict: 调用 API 返回结果
+        调用 API 返回结果
     """
     credential.raise_for_no_sessdata()
     credential.raise_for_no_bili_jct()
@@ -1159,7 +1187,7 @@ async def rename_subscribe_group(
         credential (Credential): Credential
 
     Returns:
-        dict: 调用 API 返回结果
+        调用 API 返回结果
     """
     credential.raise_for_no_sessdata()
     credential.raise_for_no_bili_jct()
@@ -1184,7 +1212,7 @@ async def set_subscribe_group(
         credential (Credential): Credential
 
     Returns:
-        dict: API 调用结果
+        API 调用结果
     """
     credential.raise_for_no_sessdata()
     credential.raise_for_no_bili_jct()
@@ -1442,11 +1470,11 @@ async def get_self_notes_info(
     获取自己的笔记列表
 
     Args:
-        page_num (int): 页码
+        page_num: 页码
 
-        page_size (int): 每页项数
+        page_size: 每页项数
 
-        credential (Credential): 凭据类
+        credential(Credential): 凭据类
 
     Returns:
         dict: 调用 API 返回的结果
@@ -1469,11 +1497,11 @@ async def get_self_public_notes_info(
     获取自己的公开笔记列表
 
     Args:
-        page_num (int): 页码
+        page_num: 页码
 
-        page_size (int): 每页项数
+        page_size: 每页项数
 
-        credential (Credential): 凭据类
+        credential(Credential): 凭据类
 
     Returns:
         dict: 调用 API 返回的结果
